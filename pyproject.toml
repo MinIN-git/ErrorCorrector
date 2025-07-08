@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ErrorCorrector"
+version = "0.1.0"
+description = "ErrorCorrector"
+authors = [{name = "Mineev Ivan", email = "mineeeevich@gmail.com"}]
+dependencies = [
+    "torch",
+    "torchvision",
+    "scikit-learn",
+]
+
+
