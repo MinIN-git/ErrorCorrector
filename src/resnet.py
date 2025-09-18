@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms, models
+import numpy as np
+
+from torchvision import models
 from torch.utils.data import DataLoader
 from typing import Tuple, Dict
 from tqdm import tqdm
@@ -10,96 +12,108 @@ from tqdm import tqdm
 class ResNet18:
     def __init__(
         self,
-        data_dir: str = "../data",
-        batch_size: int = 64,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        test_loader: DataLoader,
+        device: str,
+        weights: str | None = None,
+        target_loader: DataLoader | None = None,
         learning_rate: float = 0.001,
         num_epochs: int = 5,
-        pretrained: bool = True,
-        device: str | None = None,
     ):
         """
-        Инициализация класса для обучения ResNet18.
-        
+        Класс для обучения ResNet18.
+
         Args:
-            data_dir: Директория с данными
-            batch_size: Размер батча
-            learning_rate: Скорость обучения
-            num_epochs: Количество эпох
-            pretrained: Использовать предобученные веса
-            device: Устройство для обучения (cuda/cpu)
+            train_loader: DataLoader для обучающей выборки
+            val_loader: DataLoader для валидации
+            test_loader: DataLoader для теста
+            target_loader: DataLoader для target-класса (опционально)
+            learning_rate: скорость обучения
+            num_epochs: количество эпох
+            weights: использовать предобученные веса
+            device: устройство (cuda/cpu)
         """
-        self.data_dir = data_dir
-        self.batch_size = batch_size
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.test_loader = test_loader
+        self.target_loader = target_loader
+
         self.learning_rate = learning_rate
         self.num_epochs = num_epochs
-        self.pretrained = pretrained
-        
-        self.device = ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
-        self.optimizer = None
-        self.loss_func = None
-        self.train_loader = None
-        self.test_loader = None
+        self.weights = weights
+        self.device = device 
 
-        self.__prepare_data()
+        # готовим модель
         self.__prepare_model()
         self.__prepare_optimizer()
-        
-
-    
-    def __prepare_data(self) -> None:
-        """Подготовка данных и загрузчиков"""
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
-        
-        train_data = datasets.CIFAR10(
-            root=self.data_dir,
-            train=True,
-            download=True,
-            transform=transform
-        )
-        
-        test_data = datasets.CIFAR10(
-            root=self.data_dir,
-            train=False,
-            download=True,
-            transform=transform
-        )
-        
-        self.train_loader = DataLoader(
-            train_data,
-            batch_size=self.batch_size,
-            shuffle=True
-        )
-        
-        self.test_loader = DataLoader(
-            test_data,
-            batch_size=self.batch_size,
-            shuffle=False
-        )
     
     def __prepare_model(self) -> None:
         """Инициализация модели"""
-        self.model = models.resnet18(weights=self.pretrained)
-        self.model.fc = nn.Linear(self.model.fc.in_features, 10)  # 10 классов для CIFAR10
+        self.model = models.resnet18(weights=None, num_classes=10)
+    
+        # self.model.fc = nn.Linear(self.model.fc.in_features, 9)
+        
+        if isinstance(self.weights, str):
+            state_dict = torch.load(self.weights, map_location=self.device)
+            self.model.load_state_dict(state_dict)
+            print(f"Loaded weights from {self.weights}")
+
         self.model = self.model.to(self.device)
         self.loss_func = nn.CrossEntropyLoss()
     
     def __prepare_optimizer(self) -> None:
-        """Инициализация оптимизатора."""
+        """Инициализация оптимизатора"""
         self.optimizer = optim.Adam(
             self.model.parameters(),
             lr=self.learning_rate
         )
-    
-    def train_one_epoch(self) -> float:
-        """Обучение модели на одной эпохе
+
+    def extract_features(self, loader: DataLoader):
+        """
+        Извлечения признаков из предпоследнего слоя модели
         
         Returns:
-            Среднее значение потерь за эпоху
+            features (np.ndarray): Извлеченные признаки формы (N, 512)
+            labels (np.ndarray): Метки классов формы (N,)
+            correct_preds (np.ndarray): Массив корректности предсказаний формы (N,)
         """
+        # Экстрактор признаков без последнего слоя
+        feature_extractor = torch.nn.Sequential(
+            *list(self.model.children())[:-1]
+        ).to(self.device)
+
+        features, labels, correct_preds = [], [], [] 
+        
+        self.model.eval()
+        feature_extractor.eval()
+        
+        with torch.no_grad():  
+            for images, targets in loader:
+                images = images.to(self.device)  
+                targets = targets.to(self.device) 
+
+                # извлечение признаков
+                outputs = feature_extractor(images)
+                outputs = outputs.view(outputs.size(0), -1)
+                
+                # предсказания модели
+                logits = self.model(images)
+                preds = torch.argmax(logits, dim=1)
+                
+                # переводим на CPU и в numpy
+                features.append(outputs.cpu().numpy())
+                labels.append(targets.cpu().numpy())
+                correct_preds.append((preds == targets).cpu().numpy())
+        
+        features = np.vstack(features) 
+        labels = np.concatenate(labels) 
+        correct_preds = np.concatenate(correct_preds)
+        
+        return features, labels, correct_preds
+    
+    def train_one_epoch(self) -> float:
+        """Обучение на одной эпохе"""
         self.model.train()
         running_loss = 0
         
@@ -116,19 +130,13 @@ class ResNet18:
         
         return running_loss / len(self.train_loader)
     
-    def evaluate(self) -> Tuple[float, float]:
-        """Оценка модели на тестовых данных
-        
-        Returns:
-            Точность и средние потери на тестовом наборе
-        """
+    def evaluate(self, loader: DataLoader) -> Tuple[float, float]:
+        """Оценка модели на произвольном DataLoader"""
         self.model.eval()
-        correct = 0
-        total = 0
-        test_loss = 0.0
+        correct, total, test_loss = 0, 0, 0.0
         
         with torch.no_grad():
-            for images, labels in tqdm(self.test_loader, desc="Evaluating"):
+            for images, labels in tqdm(loader, desc="Evaluating"):
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
                 loss = self.loss_func(outputs, labels)
@@ -139,57 +147,43 @@ class ResNet18:
                 correct += (predicted == labels).sum().item()
         
         accuracy = 100 * correct / total
-        avg_loss = test_loss / len(self.test_loader)
+        avg_loss = test_loss / len(loader)
         return accuracy, avg_loss
     
     def train(self) -> Dict[str, list]:
-        """обучения модели                
-           
-        Returns:
-            Словарь с историей обучения (потери и точность)
-        """
-        history = {
-            "train_loss": [],
-            "test_loss": [],
-            "accuracy": []
-        }
+        """Цикл обучения"""
+        history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
         
         for epoch in range(self.num_epochs):
-            print(f"\nEpoch {epoch + 1}")
+            print(f"\nEpoch {epoch + 1}/{self.num_epochs}")
             
             train_loss = self.train_one_epoch()
-            history["train_loss"].append(train_loss)
+            val_acc, val_loss = self.evaluate(self.val_loader)
             
-            accuracy, test_loss = self.evaluate()
-            history["test_loss"].append(test_loss)
-            history["accuracy"].append(accuracy)
+            history["train_loss"].append(train_loss)
+            history["val_loss"].append(val_loss)
+            history["val_accuracy"].append(val_acc)
             
             print(
                 f"Train Loss: {train_loss:.4f}, "
-                f"Test Loss: {test_loss:.4f}, "
-                f"Accuracy: {accuracy:.2f}%"
+                f"Val Loss: {val_loss:.4f}, "
+                f"Val Accuracy: {val_acc:.2f}%"
             )
         
         return history
     
+    def test(self) -> Tuple[float, float]:
+        """Финальная проверка на test"""
+        return self.evaluate(self.test_loader)
+    
+    def evaluate_target(self) -> Tuple[float, float] | None:
+        """Оценка на target-классе"""
+        if self.target_loader is None:
+            print("⚠️ Target loader not provided")
+            return None
+        return self.evaluate(self.target_loader)
+    
     def save_model(self, path: str) -> None:
-        """Сохранение весов модели
-        
-        Args:
-            path: Путь для сохранения файла
-        """
+        """Сохранение весов модели"""
         torch.save(self.model.state_dict(), path)
         print(f"Model saved to {path}")
-
-
-if __name__ == "__main__":
-    trainer = ResNet18(
-        data_dir="../data",
-        batch_size=64,
-        learning_rate=0.001,
-        num_epochs=5,
-        pretrained=True
-    )
-    
-    history = trainer.train()
-    trainer.save_model("cifar10_resnet_safe.pth")

@@ -28,7 +28,7 @@ class Preprocessing:
             
         Returns:
             torch.nn.Module: Загруженная модель
-        """
+        """ 
         model = resnet18(weights=False, num_classes=10)  
         model.load_state_dict(
             torch.load(
@@ -103,44 +103,55 @@ class Preprocessing:
         
         return features, labels, correct_preds
     
-    def get_data(self, fTS=0.5, normalize=True, debug=True):
+    def get_data(self, fTS=0.5, center="CR", debug=True):
         """
-        Получения обработанных данных
-        
+        Получение обработанных данных
+
         Args:
             fTS (float): Доля данных для обучения (по умолчанию 0.5)
-            normalize (bool): Флаг нормализации данных (по умолчанию True)
-            debug (bool): Флаг вывода отладочной информации (по умолчанию True)
-            
+            center (str or None): Как вычислять центр.
+                None - без центрирования
+                "CR"  - по CR_train
+                "WR"  - по WR_train
+                "All" - по CR_train + WR_train
+            debug (bool): Выводить информацию
+
         Returns:
-            CR_train: Корректные предсказания, обучающая выборка
-            CR_test: Корректные предсказания, тестовая выборка
-            WR_train: Некорректные предсказания, обучающая выборка
-            WR_test: Некорректные предсказания, тестовая выборка
+            CR_train, CR_test, WR_train, WR_test, centre
         """
         features, _, correct_preds = self.__extract_features()
 
-        CR = features[correct_preds == 1]  
-        WR = features[correct_preds == 0] 
-
-        if normalize:
-            CR = (CR - np.mean(CR, axis=0)) / np.std(CR, axis=0)
-            WR = (WR - np.mean(WR, axis=0)) / np.std(WR, axis=0)
+        CR = features[correct_preds == 1]
+        WR = features[correct_preds == 0]
 
         CR_train, CR_test = train_test_split(
-            CR, 
-            test_size=1-fTS, 
-            random_state=42 
+            CR, test_size=1 - fTS, random_state=42
+        )
+        WR_train, WR_test = train_test_split(
+            WR, test_size=1 - fTS, random_state=42
         )
 
-        WR_train, WR_test = train_test_split(
-            WR, 
-            test_size=1-fTS, 
-            random_state=42
-        )
+        centre = None
+        if center is not None:
+            if center == "CR":
+                centre = np.mean(CR_train, axis=0)
+            elif center == "WR":
+                centre = np.mean(WR_train, axis=0)
+            elif center == "All":
+                centre = np.mean(np.vstack([CR_train, WR_train]), axis=0)
+            else:
+                raise ValueError(f"Unknown center option: {center}")
+
+            # Центрируем
+            CR_train = CR_train - centre
+            CR_test  = CR_test - centre
+            WR_train = WR_train - centre
+            WR_test  = WR_test - centre
 
         if debug:
-            print("Правильные предсказания (CR): {}".format(len(CR)))
-            print("Ошибки (WR): {}".format(len(WR)))
+            print(f"Правильные предсказания (CR): {len(CR)}")
+            print(f"Ошибки (WR): {len(WR)}")
+            if centre is not None:
+                print(f"Центр посчитан по: {center}")
 
-        return CR_train, CR_test, WR_train, WR_test
+        return CR_train, CR_test, WR_train, WR_test, centre
