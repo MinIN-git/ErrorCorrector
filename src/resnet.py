@@ -7,6 +7,8 @@ from torchvision import models
 from torch.utils.data import DataLoader
 from typing import Tuple, Dict
 from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score
+
 
 
 class ResNet18:
@@ -68,22 +70,22 @@ class ResNet18:
             self.model.parameters(),
             lr=self.learning_rate
         )
-
+ 
     def extract_features(self, loader: DataLoader):
         """
         Извлечения признаков из предпоследнего слоя модели
         
         Returns:
             features (np.ndarray): Извлеченные признаки формы (N, 512)
-            labels (np.ndarray): Метки классов формы (N,)
-            correct_preds (np.ndarray): Массив корректности предсказаний формы (N,)
+            preds (np.ndarray): Предсказанные метки классов формы (N,)
+            gt_preds (np.ndarray): Истинные метки классов формы (N,)
         """
         # Экстрактор признаков без последнего слоя
         feature_extractor = torch.nn.Sequential(
             *list(self.model.children())[:-1]
         ).to(self.device)
 
-        features, labels, correct_preds = [], [], [] 
+        features, preds, gt_preds = [], [], []
         
         self.model.eval()
         feature_extractor.eval()
@@ -99,18 +101,18 @@ class ResNet18:
                 
                 # предсказания модели
                 logits = self.model(images)
-                preds = torch.argmax(logits, dim=1)
+                pred = torch.argmax(logits, dim=1)
                 
                 # переводим на CPU и в numpy
                 features.append(outputs.cpu().numpy())
-                labels.append(targets.cpu().numpy())
-                correct_preds.append((preds == targets).cpu().numpy())
+                preds.append(pred.cpu().numpy())
+                gt_preds.append(targets.cpu().numpy())
         
         features = np.vstack(features) 
-        labels = np.concatenate(labels) 
-        correct_preds = np.concatenate(correct_preds)
+        preds = np.concatenate(preds)
+        gt_preds = np.concatenate(gt_preds) 
         
-        return features, labels, correct_preds
+        return features, preds, gt_preds
     
     def train_one_epoch(self) -> float:
         """Обучение на одной эпохе"""
@@ -130,44 +132,63 @@ class ResNet18:
         
         return running_loss / len(self.train_loader)
     
-    def evaluate(self, loader: DataLoader) -> Tuple[float, float]:
-        """Оценка модели на произвольном DataLoader"""
+    def evaluate(self, loader: DataLoader) -> dict:
+        """Оценка модели на произвольном DataLoader с метриками sklearn"""
         self.model.eval()
-        correct, total, test_loss = 0, 0, 0.0
-        
+        all_preds, all_labels = [], []
+        test_loss = 0.0
+
         with torch.no_grad():
             for images, labels in tqdm(loader, desc="Evaluating"):
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
+
                 loss = self.loss_func(outputs, labels)
                 test_loss += loss.item()
-                
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-        
-        accuracy = 100 * correct / total
+
+                preds = torch.argmax(outputs, dim=1)
+
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+
+        # метрики
+        acc = accuracy_score(all_labels, all_preds)
+        f1_macro = f1_score(all_labels, all_preds, average="macro") 
+        f1_micro = f1_score(all_labels, all_preds, average="micro")  
+
         avg_loss = test_loss / len(loader)
-        return accuracy, avg_loss
+
+        return {
+            "loss": avg_loss,
+            "accuracy": acc,
+            "f1_macro": f1_macro,
+            "f1_micro": f1_micro,
+        }
     
     def train(self) -> Dict[str, list]:
         """Цикл обучения"""
-        history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
+        history = {"train_loss": [], "val_loss": [], "val_accuracy": [], "val_f1_macro": [],
+                   "val_f1_micro": []}
         
         for epoch in range(self.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.num_epochs}")
             
             train_loss = self.train_one_epoch()
-            val_acc, val_loss = self.evaluate(self.val_loader)
+            val_info = self.evaluate(self.val_loader)
             
             history["train_loss"].append(train_loss)
-            history["val_loss"].append(val_loss)
-            history["val_accuracy"].append(val_acc)
+            history["val_loss"].append(val_info['loss'])
+            history["val_accuracy"].append(val_info['accuracy'])
+            history["val_f1_macro"].append(val_info['f1_macro'])
+            history["val_f1_micro"].append(val_info['f1_micro'])
             
             print(
                 f"Train Loss: {train_loss:.4f}, "
-                f"Val Loss: {val_loss:.4f}, "
-                f"Val Accuracy: {val_acc:.2f}%"
+                f"Val Loss: {val_info['loss']:.4f}, "
+                f"Val f1_score: {val_info['f1_macro']:.2f}%"
             )
         
         return history
@@ -176,12 +197,6 @@ class ResNet18:
         """Финальная проверка на test"""
         return self.evaluate(self.test_loader)
     
-    def evaluate_target(self) -> Tuple[float, float] | None:
-        """Оценка на target-классе"""
-        if self.target_loader is None:
-            print("⚠️ Target loader not provided")
-            return None
-        return self.evaluate(self.target_loader)
     
     def save_model(self, path: str) -> None:
         """Сохранение весов модели"""

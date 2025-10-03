@@ -13,6 +13,8 @@ dependencies = [
     "scikit-learn",
     "tqdm",
     "matplotlib",
+    "seaborn",
+    "plotly"
 ]
 
 

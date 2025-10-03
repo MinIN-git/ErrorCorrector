@@ -250,6 +250,4 @@ $RECYCLE.BIN/
 
 # Other
 data/
-models/
-figures/
 poetry.lock
