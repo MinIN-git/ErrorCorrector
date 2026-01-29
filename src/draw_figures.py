@@ -2,8 +2,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import plotly.express as px
+import torch
+import os
 
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix, ConfusionMatrixDisplay
+from collections import Counter
 
 
 def plot_projection(
@@ -31,7 +34,7 @@ def plot_projection(
     
     plt.scatter(cr_data[:, 0], cr_data[:, 1], label='CR (correct)', alpha=0.5)
     plt.scatter(wr_data[:, 0], wr_data[:, 1], label='WR (wrong)', alpha=0.5)
-    plt.title("Проекция CR/WR + Target")
+    plt.title("Проекция CR/WR")
 
     if target_data is not None:
         if target_data.shape[1] < 2:
@@ -41,14 +44,17 @@ def plot_projection(
         plt.title("Проекция CR/WR + Target")
     
     plt.xlabel(f"{method}-1")
-    plt.ylabel(f"{method}-2'")
+    plt.ylabel(f"{method}-2")
     plt.legend()
     plt.grid(True)
 
     if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
     
     plt.show()
+
+    return path
 
 
 def plot_embedding_3d(embedding: np.ndarray, gt_preds: np.ndarray):
@@ -85,6 +91,7 @@ def plot_loss(
     plt.grid(True)
 
     if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
     plt.show()
@@ -102,17 +109,23 @@ def plot_accuracy(acc: list, title: str = "Accuracy", path: str | None = None):
     plt.figure(figsize=(10, 6))
     plt.plot(acc, label="Accuracy", marker='o', color='green')
     plt.xlabel("Epoch")
-    plt.ylabel("Accuracy (%)")
+    plt.ylabel(title)
     plt.title(title)
     plt.legend()
     plt.grid(True)
 
     if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
     plt.show()
 
-def plot_roc_auc(scores: np.ndarray, y: np.ndarray, path: str | None = None):
+def plot_roc_auc(
+        scores: np.ndarray, 
+        y: np.ndarray, 
+        title: str = "ROC кривая LDA", 
+        path: str | None = None
+    ):
     """
     Строит roc_auc метрику (https://habr.com/ru/companies/otus/articles/809147/).
     
@@ -131,19 +144,20 @@ def plot_roc_auc(scores: np.ndarray, y: np.ndarray, path: str | None = None):
     plt.plot([0,1], [0,1], "k--", label="Random guess")
     plt.xlabel("False Positive Rate (FPR)")
     plt.ylabel("True Positive Rate (TPR)")
-    plt.title("ROC кривая LDA")
+    plt.title(title)
     plt.legend()
     plt.grid()
 
     if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
     plt.show()
 
-    return auc
+    return auc, path
 
 
-def plot_kde(X_lda: np.ndarray,  y: np.ndarray, path: str | None = None):
+def plot_kde(X_lda: np.ndarray,  y: np.ndarray, title: str = "KDE for LDA", path: str | None = None):
     """
     Строит ядерную оценку плотности (https://scikit-learn.ru/stable/modules/density.html).
     
@@ -158,11 +172,92 @@ def plot_kde(X_lda: np.ndarray,  y: np.ndarray, path: str | None = None):
     sns.kdeplot(X_lda[y==0].ravel(), label="Old classes (CR+WR)", fill=True, alpha=0.5)
     sns.kdeplot(X_lda[y==1].ravel(), label="Unseen class (Target)", fill=True, alpha=0.5)
 
-    plt.title("KDE для LDA ")
+    plt.title(title)
     plt.xlabel("X")
     plt.legend()
+
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        plt.savefig(path)
+
+    plt.show()
+
+    return path
+
+
+def class_distribution(dataloader, path: str | None = None, class_names=None):
+    """
+    dataloader: torch.utils.data.DataLoader
+    class_names: list[str] или None
+    """
+    counter = Counter()
+
+    for _, labels in dataloader:
+        if isinstance(labels, torch.Tensor):
+            labels = labels.tolist()
+        counter.update(labels)
+
+    counter = dict(sorted(counter.items()))
+
+    labels = [
+        class_names[k] if class_names else str(k)
+        for k in counter.keys()
+    ]
+    values = list(counter.values())
+
+
+    plt.pie(values, labels=labels, autopct='%1.1f%%')
+    plt.title("Class distribution")
 
     if path:
         plt.savefig(path)
 
     plt.show()
+
+    return path
+
+
+def plot_confusion_matrix(
+        preds,
+        gt_preds,
+        class_names=None,
+        path: str | None = None,
+        title="Confusion Matrix",
+        normalize=None,
+    ):
+    """
+    normalize:
+        None        – обычная
+        'true'      – по строкам (recall)
+        'pred'      – по столбцам (precision)
+        'all'       – глобальная
+    """
+
+    cm = confusion_matrix(
+        gt_preds,
+        preds,
+        normalize=normalize
+    )
+
+    disp = ConfusionMatrixDisplay(
+        confusion_matrix=cm,
+        display_labels=class_names
+    )
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    disp.plot(
+        ax=ax,
+        cmap="Blues",
+        colorbar=True,
+        values_format=".2f" if normalize else "d"
+    )
+
+    ax.set_title(title)
+
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        plt.savefig(path)
+
+    plt.show()
+
+    return path

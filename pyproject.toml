@@ -14,7 +14,8 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "seaborn",
-    "plotly"
+    "plotly",
+    "xgboost"
 ]
 
 
