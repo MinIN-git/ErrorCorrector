@@ -52,7 +52,7 @@ def plot_projection(
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
     
-    plt.show()
+    #plt.show()
 
     return path
 
@@ -94,7 +94,9 @@ def plot_loss(
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
+
+    return plt
 
 
 def plot_accuracy(acc: list, title: str = "Accuracy", path: str | None = None):
@@ -118,7 +120,9 @@ def plot_accuracy(acc: list, title: str = "Accuracy", path: str | None = None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
+
+    return plt
 
 def plot_roc_auc(
         scores: np.ndarray, 
@@ -152,7 +156,7 @@ def plot_roc_auc(
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
 
     return auc, path
 
@@ -180,7 +184,7 @@ def plot_kde(X_lda: np.ndarray,  y: np.ndarray, title: str = "KDE for LDA", path
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
 
     return path
 
@@ -212,7 +216,7 @@ def class_distribution(dataloader, path: str | None = None, class_names=None):
     if path:
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
 
     return path
 
@@ -258,6 +262,6 @@ def plot_confusion_matrix(
         os.makedirs(os.path.dirname(path), exist_ok=True)
         plt.savefig(path)
 
-    plt.show()
+    #plt.show()
 
-    return path
+    return plt

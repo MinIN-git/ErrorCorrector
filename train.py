@@ -2,11 +2,9 @@ import os
 import argparse
 import torch
 import numpy as np
-import mlflow
-import mlflow.pytorch
-
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pandas as pd
 
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
@@ -16,41 +14,31 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report
 )
+from PIL import Image
+from clearml import Task, OutputModel
 
 from src.resnet import ResNet18
 from src.dataloader import CIFARCustom
 from src.draw_figures import plot_loss, plot_accuracy, plot_confusion_matrix
 
 
-def plot_confusion_matrix(
-    y_true,
-    y_pred,
-    class_names,
-    save_path,
-    normalize=False
-):
-    cm = confusion_matrix(y_true, y_pred)
+# api {
+#   web_server: http://172.25.249.11:5000
+#   api_server: http://172.25.249.11:8008
+#   files_server: http://172.25.249.11:8081
+#   credentials {
+#     "access_key" = "D0D2WJUUD4ZD96NRHIMM9IQGKW9EUA"
+#     "secret_key" = "cVNwKiwF9nt3jIlJTfx_IwXMRpdY-1ZJAecPzahigGbc1qILKjIiXbLtwJyP9U-JkyE"
+#   }
+# }
 
-    if normalize:
-        cm = cm.astype(np.float32)
-        cm = cm / cm.sum(axis=1, keepdims=True)
 
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt=".2f" if normalize else "d",
-        cmap="Blues",
-        xticklabels=class_names,
-        yticklabels=class_names
-    )
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    title = "Confusion Matrix (Normalized)" if normalize else "Confusion Matrix"
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+def fig2img(fig):
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    return Image.open(buf).convert("RGB")
 
 
 def collect_predictions(model, loader, device):
@@ -61,15 +49,12 @@ def collect_predictions(model, loader, device):
         for images, targets in loader:
             images = images.to(device)
             targets = targets.to(device)
-
             outputs = model(images)
             pred = torch.argmax(outputs, dim=1)
-
             preds.append(pred.cpu().numpy())
             labels.append(targets.cpu().numpy())
 
     return np.concatenate(labels), np.concatenate(preds)
-
 
 
 def parse_args():
@@ -103,162 +88,156 @@ def main():
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
     generator = torch.Generator().manual_seed(args.seed)
 
-    mlflow.set_experiment("ResNet18_CIFAR10_Exclude_Class")
+    # === ClearML Task Initialization ===
+    task = Task.init(
+        project_name="ResNet18_CIFAR10_Exclude_Class",
+        task_name=f"exclude_class_{args.target}_epoch_{args.epochs}",
+        output_uri=args.output_root
+    )
+    task.connect(vars(args))
+    logger = task.get_logger()
 
-    with mlflow.start_run(run_name=f"exclude_class_{args.target}_epoch_{args.epochs}"):
+    # === Folders ===
+    out_dir = f"{args.output_root}/{args.target}/train"
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(args.model_root, exist_ok=True)
+
+    # === Transforms ===
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+
+    # === Dataset & Splits ===
+    dataset = CIFARCustom(
+        root=args.data_root,
+        exclude_class=[args.target],
+        train=True,
+        transform=transform
+    )
+
+    train_size = int(0.8 * len(dataset))
+    val_size = int(0.15 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+
+    train_set, val_set, test_set = random_split(
+        dataset,
+        [train_size, val_size, test_size],
+        generator=generator
+    )
+
+    logger.report_text(f"Dataset sizes: train={len(train_set)}, val={len(val_set)}, test={len(test_set)}")
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        generator=generator
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers
+    )
+
+    # === Model ===
+    model = ResNet18(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        device=device,
+        learning_rate=args.lr,
+        num_epochs=args.epochs
+    )
+
+    history = model.train()
+
+    # === Log training metrics ===
+    for epoch in range(len(history["train_loss"])):
+        logger.report_scalar("Training Loss", "train_loss", history["train_loss"][epoch], iteration=epoch)
+        logger.report_scalar("Validation Loss", "val_loss", history["val_loss"][epoch], iteration=epoch)
+        logger.report_scalar("Validation Accuracy", "val_accuracy", history["val_accuracy"][epoch], iteration=epoch)
+        logger.report_scalar("Validation F1 Macro", "val_f1_macro", history["val_f1_macro"][epoch], iteration=epoch)
+
+    plot_train_loss = plot_loss(history["train_loss"], history["val_loss"])
+    plot_val_acc = plot_accuracy(history["val_accuracy"])
+    plot_val_f1 = plot_accuracy(history["val_f1_macro"], "F1 Macro")
 
 
-        # Log hyperparameters
-        mlflow.log_params(vars(args))
-        mlflow.log_param("device", device.type)
+    logger.report_image("Loss", "loss_plot", iteration=0, image=fig2img(plot_train_loss))
+    logger.report_image("Accuracy", "accuracy_plot", iteration=0, image=fig2img(plot_val_acc))
+    logger.report_image("F1 Macro", "f1_macro_plot", iteration=0, image=fig2img(plot_val_f1))
 
 
-        # Folders
-        out_dir = f"{args.output_root}/{args.target}/train"
-        os.makedirs(out_dir, exist_ok=True)
-        os.makedirs(args.model_root, exist_ok=True)
+    # === TEST METRICS ===
+    class_names = [str(i) for i in range(10) if i != args.target]
+    y_gt, y_pred = collect_predictions(model.model, test_loader, device)
 
-        # Transforms
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
+    test_acc = accuracy_score(y_gt, y_pred)
+    test_f1_macro = f1_score(y_gt, y_pred, average="macro")
+    test_f1_weighted = f1_score(y_gt, y_pred, average="weighted")
 
-        # Dataset & splits
-        dataset = CIFARCustom(
-            root=args.data_root,
-            exclude_class=[args.target],
-            train=True,
-            transform=transform
-        )
+    last_epoch = len(history["train_loss"]) - 1
+    logger.report_scalar("Test Metrics", "accuracy", test_acc, iteration=last_epoch)
+    logger.report_scalar("Test Metrics", "f1_macro", test_f1_macro, iteration=last_epoch)
+    logger.report_scalar("Test Metrics", "f1_weighted", test_f1_weighted, iteration=last_epoch)
 
-        train_size = int(0.8 * len(dataset))
-        val_size = int(0.15 * len(dataset))
-        test_size = len(dataset) - train_size - val_size
+    # per-class f1
+    f1_per_class = f1_score(y_gt, y_pred, average=None)
+    for cls, f1 in zip(class_names, f1_per_class):
+        logger.report_scalar("Test F1 per Class", cls, f1, iteration=last_epoch)
 
-        train_set, val_set, test_set = random_split(
-            dataset,
-            [train_size, val_size, test_size],
-            generator=generator
-        )
+    plot_cfm = plot_confusion_matrix(y_gt, y_pred, class_names)
+    plot_cfm_n = plot_confusion_matrix(y_gt, y_pred, class_names, normalize="all")
 
-        mlflow.log_params({
-            "train_size": len(train_set),
-            "val_size": len(val_set),
-            "test_size": len(test_set)
-        })
+    logger.report_image("Confusion Matrix", "raw", image=fig2img(plot_cfm))
+    logger.report_image("Confusion Matrix", "normalized", image=fig2img(plot_cfm_n))
 
-        train_loader = DataLoader(
-            train_set,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            generator=generator
-        )
+    # Classification report
+    report_dict = classification_report(
+        y_gt,
+        y_pred,
+        target_names=class_names,
+        digits=4,
+        output_dict=True
+    )
 
-        val_loader = DataLoader(
-            val_set,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers
-        )
+    report_df = pd.DataFrame(report_dict).transpose()
 
-        test_loader = DataLoader(
-            test_set,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers
-        )
+    task.upload_artifact(
+        name="classification_report",
+        artifact_object=report_df
+    )
 
+    # Save model
+    model_path = f"{args.model_root}/resnet18_cifar10_without{args.target}_epoch_{args.epochs}.pth"
+    model.save_model(model_path)
+    output_model = OutputModel(
+        task=task,
+        name=f"resnet18_exclude_{args.target}_epoch_{args.epochs}"
+    )
 
-        # Model
-        model = ResNet18(
-            train_loader=train_loader,
-            val_loader=val_loader,
-            test_loader=test_loader,
-            device=device,
-            learning_rate=args.lr,
-            num_epochs=args.epochs
-        )
+    output_model = OutputModel(
+        task=task,
+        name=f"resnet18_exclude_{args.target}_epoch_{args.epochs}"
+    )
 
-        history = model.train()
+    output_model.update_weights(model_path)
 
-        # Log training metrics
-        for epoch in range(len(history["train_loss"])):
-            mlflow.log_metric("train_loss", history["train_loss"][epoch], step=epoch)
-            mlflow.log_metric("val_loss", history["val_loss"][epoch], step=epoch)
-            mlflow.log_metric("val_accuracy", history["val_accuracy"][epoch], step=epoch)
-            mlflow.log_metric("val_f1_macro", history["val_f1_macro"][epoch], step=epoch)
-
-        # Plots
-        loss_path = f"{out_dir}/loss.png"
-        acc_path = f"{out_dir}/accuracy.png"
-        f1_path = f"{out_dir}/f1_macro.png"
-
-        plot_loss(history["train_loss"], history["val_loss"], path=loss_path)
-        plot_accuracy(history["val_accuracy"], path=acc_path)
-        plot_accuracy(history["val_f1_macro"], "F1 Macro", f1_path)
-
-        mlflow.log_artifact(loss_path, "plots")
-        mlflow.log_artifact(acc_path, "plots")
-        mlflow.log_artifact(f1_path, "plots")
-
-        # TEST METRICS
-        class_names = [str(i) for i in range(10) if i != args.target]
-
-        y_test, y_pred = collect_predictions(model.model, test_loader, device)
-
-        test_acc = accuracy_score(y_test, y_pred)
-        test_f1_macro = f1_score(y_test, y_pred, average="macro")
-        test_f1_weighted = f1_score(y_test, y_pred, average="weighted")
-
-        mlflow.log_metric("test_accuracy", test_acc)
-        mlflow.log_metric("test_f1_macro", test_f1_macro)
-        mlflow.log_metric("test_f1_weighted", test_f1_weighted)
-
-        # per-class f1
-        f1_per_class = f1_score(y_test, y_pred, average=None)
-        for cls, f1 in zip(class_names, f1_per_class):
-            mlflow.log_metric(f"test_f1_class_{cls}", f1)
-
-        # Confusion matrices
-        cm_raw_path = f"{out_dir}/confusion_matrix.png"
-        cm_norm_path = f"{out_dir}/confusion_matrix_normalized.png"
-
-        plot_confusion_matrix(
-            y_test, y_pred, class_names, cm_raw_path, normalize=False
-        )
-        plot_confusion_matrix(
-            y_test, y_pred, class_names, cm_norm_path, normalize=True
-        )
-
-        mlflow.log_artifact(cm_raw_path, "confusion_matrix")
-        mlflow.log_artifact(cm_norm_path, "confusion_matrix")
-
-        # Classification report
-        report = classification_report(
-            y_test,
-            y_pred,
-            target_names=class_names,
-            digits=4
-        )
-
-        report_path = f"{out_dir}/classification_report.txt"
-        with open(report_path, "w") as f:
-            f.write(report)
-
-        mlflow.log_artifact(report_path, "test_metrics")
-
-        # Save model
-        model_path = f"{args.model_root}/resnet18_cifar10_without{args.target}_epoch_{args.epochs}.pth"
-        model.save_model(model_path)
-
-        mlflow.log_artifact(model_path, "models")
-        mlflow.pytorch.log_model(model.model, f"exlude{args.target}_epoch{args.epochs}")
+    output_model.set_metadata("epochs", args.epochs)
+    output_model.set_metadata("excluded_class", args.target)
 
 
 if __name__ == "__main__":
