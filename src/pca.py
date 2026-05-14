@@ -4,7 +4,7 @@ import numpy as np
 
 class PCATransformer:
     """
-    Класс для обработки данных методом главных компнент
+    Класс для обработки данных методом главных компонент
 
     На почитать:
         https://practicum.yandex.ru/blog/metod-glavnyh-komponent/
@@ -19,23 +19,16 @@ class PCATransformer:
         self.whiten = whiten
         self.pca = None
 
+        self._comp_start = None
+        self._comp_end = None
+
     def fit(self, X):
         """
         Обучение PCA модели
-
-        Пайплайн:
-            1) Считаем PCA на всех компонентах, чтобы получить их дисперсии (`explained_variance_`).
-            2) Анализируем дисперсии и решаем, сколько компонент оставить
-        
-        Args:
-            X (np.ndarray): Матрица признаков формы (n_samples, n_features)
         """
-        
-    
         if self.n_components == "kaiser":
             pca = PCA(n_components=None, whiten=self.whiten)
             pca.fit(X)
-
             self.n_components = np.sum(pca.explained_variance_ > np.mean(pca.explained_variance_))
 
         self.pca = PCA(n_components=self.n_components, whiten=self.whiten)
@@ -47,29 +40,54 @@ class PCATransformer:
         print("Объяснённая дисперсия: {}".format(
             int(1000*np.sum(self.pca.explained_variance_ratio_))/1000
         ))
+        return self
 
     def transform(self, X):
         """
-        Применение обученной PCA модели к новым данным
+        Применение обученной PCA модели к новым данным.
+        """
+        if self.pca is None:
+            raise RuntimeError("Сначала вызовите fit()")
+            
+        X_proj = self.pca.transform(X)
         
-        Данные будут центрированы с использованием тех же средних значений,
-        что и при обучении (если исходные данные требовали центрирования)
+        # Если задан диапазон — возвращаем только хвост
+        if self._comp_start is not None and self._comp_end is not None:
+            return X_proj[:, self._comp_start:self._comp_end]
         
-        Args:
-            X (np.ndarray): Матрица признаков формы (n_samples, n_features)
+        return X_proj
+      
+    def get_explained_variance(self):
+        return round(np.sum(self.pca.explained_variance_ratio_), 3)
+    
+    def select_variance_range(self, var_min=0.90, var_max=0.99):
+        """
+        Настраивает трансформер на работу с компонентами в диапазоне 
+        накопленной объясненной дисперсии [var_min, var_max].
+        
             
         Returns:
-            np.ndarray: Преобразованные данные формы (n_samples, n_components)
+            tuple: (start_idx, end_idx) — индексы выбранных компонент
         """
-        return self.pca.transform(X)      
-
+        if self.pca is None:
+            raise RuntimeError("Сначала fit()")
+        
+        cumsum = np.cumsum(self.pca.explained_variance_ratio_)
+        
+        self._comp_start = np.searchsorted(cumsum, var_min, side='left')
+        self._comp_end = np.searchsorted(cumsum, var_max, side='right')
+        
+        variance = round(var_max - var_min, 3)
+        print(f"Выбран диапазон компонент [{self._comp_start}:{self._comp_end}] "
+              f"(дисперсия: {variance}")
+        
+        return self._comp_start, self._comp_end, variance
     
-
-if __name__=="__main__":
-    arr1 = np.array([5, 5, 5])
-    arr2 = np.array([3, 2, 5])
-
-    all_data = np.vstack((arr1, arr2))
-
-    pca = PCATransformer(n_components='auto', whiten=True) 
-    pca.fit(all_data)
+    def reset_variance_range(self):
+        """
+        Сбрасывает настройку диапазона компонент
+        """
+        self._comp_start = None
+        self._comp_end = None
+        print("Диапазон компонент сброшен, используются все компоненты")
+        return self

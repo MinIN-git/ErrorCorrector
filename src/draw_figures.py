@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import plotly.express as px
+import pandas as pd
 import torch
 import os
 
@@ -253,6 +254,38 @@ def plot_confusion_matrix(
     )
 
     ax.set_title(title)
+
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        plt.savefig(path)
+
+    plt.show()
+
+    return path
+
+def plot_variance_vs_f1(
+        df: pd.DataFrame,
+        path: str | None = None,
+        title="tail_variance vs F1",
+
+    ):
+    plt.figure(figsize=(10, 6))
+
+    for model_name in df["model"].unique():
+
+        model_df = df[df["model"] == model_name]
+
+        plt.plot(
+            model_df["tail_variance"],
+            model_df["f1_macro"],
+            label=model_name
+        )
+
+    plt.xlabel("tail_variance")
+    plt.ylabel("F1 Macro")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
 
     if path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
