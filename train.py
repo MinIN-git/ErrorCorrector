@@ -10,6 +10,7 @@ import seaborn as sns
 
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
+from dotenv import load_dotenv
 from sklearn.metrics import (
     confusion_matrix,
     f1_score,
@@ -107,6 +108,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator().manual_seed(args.seed)
 
+    load_dotenv()
     mlflow.set_experiment("ResNet18_CIFAR10_Exclude_Class")
 
     with mlflow.start_run(run_name=f"exclude_class_{args.target}_epoch_{args.epochs}"):
