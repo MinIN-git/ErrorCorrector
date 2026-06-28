@@ -5,9 +5,14 @@ import plotly.express as px
 import pandas as pd
 import torch
 import os
+from pathlib import Path
 
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix, ConfusionMatrixDisplay
 from collections import Counter
+
+
+def _ensure_parent_dir(path: str | os.PathLike[str]) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
 def plot_projection(
@@ -50,7 +55,7 @@ def plot_projection(
     plt.grid(True)
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
     
     plt.show()
@@ -92,7 +97,7 @@ def plot_loss(
     plt.grid(True)
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
@@ -116,7 +121,7 @@ def plot_accuracy(acc: list, title: str = "Accuracy", path: str | None = None):
     plt.grid(True)
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
@@ -150,7 +155,7 @@ def plot_roc_auc(
     plt.grid()
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
@@ -211,6 +216,7 @@ def class_distribution(dataloader, path: str | None = None, class_names=None):
     plt.title("Class distribution")
 
     if path:
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
@@ -256,41 +262,81 @@ def plot_confusion_matrix(
     ax.set_title(title)
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
 
     return path
 
-def plot_variance_vs_f1(
+def plot_variance_vs_metric(
         df: pd.DataFrame,
+        metric_col: str,
         path: str | None = None,
-        title="tail_variance vs F1",
-
+        title: str | None = None,
     ):
+    """
+    Строит график метрики от tail_variance для каждой модели.
+
+    Args:
+        df: таблица с колонками tail_variance, model и metric_col
+        metric_col: имя колонки с метрикой, например "f1_macro" или "power"
+        path: путь для сохранения
+        title: заголовок графика
+    """
+    if metric_col not in df.columns:
+        raise KeyError(f"В df нет колонки '{metric_col}'.")
+
+    if title is None:
+        title = f"tail_variance vs {metric_col}"
+
     plt.figure(figsize=(10, 6))
 
     for model_name in df["model"].unique():
-
         model_df = df[df["model"] == model_name]
 
         plt.plot(
             model_df["tail_variance"],
-            model_df["f1_macro"],
+            model_df[metric_col],
             label=model_name
         )
 
     plt.xlabel("tail_variance")
-    plt.ylabel("F1 Macro")
+    plt.ylabel(metric_col)
     plt.title(title)
     plt.legend()
     plt.grid(True)
 
     if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_parent_dir(path)
         plt.savefig(path)
 
     plt.show()
 
     return path
+
+
+def plot_variance_vs_f1(
+        df: pd.DataFrame,
+        path: str | None = None,
+        title="tail_variance vs F1",
+    ):
+    return plot_variance_vs_metric(
+        df,
+        metric_col="f1_macro",
+        path=path,
+        title=title,
+    )
+
+
+def plot_variance_vs_power(
+        df: pd.DataFrame,
+        path: str | None = None,
+        title="tail_variance vs Power",
+    ):
+    return plot_variance_vs_metric(
+        df,
+        metric_col="power",
+        path=path,
+        title=title,
+    )

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from pathlib import Path
 
 from torchvision import models
 from torch.utils.data import DataLoader
@@ -56,8 +57,8 @@ class ResNet18:
     
         # self.model.fc = nn.Linear(self.model.fc.in_features, 9)
         
-        if isinstance(self.weights, str):
-            state_dict = torch.load(self.weights, map_location=self.device)
+        if self.weights is not None:
+            state_dict = torch.load(str(self.weights), map_location=self.device)
             self.model.load_state_dict(state_dict)
             print(f"Loaded weights from {self.weights}")
 
@@ -200,5 +201,7 @@ class ResNet18:
     
     def save_model(self, path: str) -> None:
         """Сохранение весов модели"""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(self.model.state_dict(), path)
         print(f"Model saved to {path}")
