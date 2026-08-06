@@ -10,12 +10,16 @@ authors = [{name = "Mineev Ivan", email = "mineeeevich@gmail.com"}]
 dependencies = [
     "torch",
     "torchvision",
+    "pandas",
     "scikit-learn",
     "tqdm",
     "matplotlib",
     "seaborn",
     "plotly",
-    "xgboost"
+    "xgboost",
+    "mlflow",
+    "python-dotenv",
+    "umap-learn"
 ]
 
 [tool.setuptools]
@@ -23,4 +27,3 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
-

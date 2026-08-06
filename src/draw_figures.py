@@ -231,6 +231,7 @@ def plot_confusion_matrix(
         path: str | None = None,
         title="Confusion Matrix",
         normalize=None,
+        labels=None,
     ):
     """
     normalize:
@@ -243,6 +244,7 @@ def plot_confusion_matrix(
     cm = confusion_matrix(
         gt_preds,
         preds,
+        labels=labels,
         normalize=normalize
     )
 

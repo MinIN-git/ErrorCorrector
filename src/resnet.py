@@ -23,6 +23,8 @@ class ResNet18:
         target_loader: DataLoader | None = None,
         learning_rate: float = 0.001,
         num_epochs: int = 5,
+        num_classes: int = 10,
+        input_channels: int = 3,
     ):
         """
         Класс для обучения ResNet18.
@@ -36,6 +38,8 @@ class ResNet18:
             num_epochs: количество эпох
             weights: использовать предобученные веса
             device: устройство (cuda/cpu)
+            num_classes: количество выходов модели
+            input_channels: количество каналов во входном изображении
         """
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -46,6 +50,8 @@ class ResNet18:
         self.num_epochs = num_epochs
         self.weights = weights
         self.device = device 
+        self.num_classes = num_classes
+        self.input_channels = input_channels
 
         # готовим модель
         self.__prepare_model()
@@ -53,9 +59,16 @@ class ResNet18:
     
     def __prepare_model(self) -> None:
         """Инициализация модели"""
-        self.model = models.resnet18(weights=None, num_classes=10)
-    
-        # self.model.fc = nn.Linear(self.model.fc.in_features, 9)
+        self.model = models.resnet18(weights=None, num_classes=self.num_classes)
+        if self.input_channels != 3:
+            self.model.conv1 = nn.Conv2d(
+                self.input_channels,
+                self.model.conv1.out_channels,
+                kernel_size=self.model.conv1.kernel_size,
+                stride=self.model.conv1.stride,
+                padding=self.model.conv1.padding,
+                bias=False,
+            )
         
         if self.weights is not None:
             state_dict = torch.load(str(self.weights), map_location=self.device)
@@ -72,49 +85,6 @@ class ResNet18:
             lr=self.learning_rate
         )
  
-    def extract_features(self, loader: DataLoader):
-        """
-        Извлечения признаков из предпоследнего слоя модели
-        
-        Returns:
-            features (np.ndarray): Извлеченные признаки формы (N, 512)
-            preds (np.ndarray): Предсказанные метки классов формы (N,)
-            gt_preds (np.ndarray): Истинные метки классов формы (N,)
-        """
-        # Экстрактор признаков без последнего слоя
-        feature_extractor = torch.nn.Sequential(
-            *list(self.model.children())[:-1]
-        ).to(self.device)
-
-        features, preds, gt_preds = [], [], []
-        
-        self.model.eval()
-        feature_extractor.eval()
-        
-        with torch.no_grad():  
-            for images, targets in loader:
-                images = images.to(self.device)  
-                targets = targets.to(self.device) 
-
-                # извлечение признаков
-                outputs = feature_extractor(images)
-                outputs = outputs.view(outputs.size(0), -1)
-                
-                # предсказания модели
-                logits = self.model(images)
-                pred = torch.argmax(logits, dim=1)
-                
-                # переводим на CPU и в numpy
-                features.append(outputs.cpu().numpy())
-                preds.append(pred.cpu().numpy())
-                gt_preds.append(targets.cpu().numpy())
-        
-        features = np.vstack(features) 
-        preds = np.concatenate(preds)
-        gt_preds = np.concatenate(gt_preds) 
-        
-        return features, preds, gt_preds
-    
     def train_one_epoch(self) -> float:
         """Обучение на одной эпохе"""
         self.model.train()
@@ -156,9 +126,10 @@ class ResNet18:
         all_labels = np.array(all_labels)
 
         # метрики
+        labels = list(range(self.num_classes))
         acc = accuracy_score(all_labels, all_preds)
-        f1_macro = f1_score(all_labels, all_preds, average="macro") 
-        f1_micro = f1_score(all_labels, all_preds, average="micro")  
+        f1_macro = f1_score(all_labels, all_preds, labels=labels, average="macro", zero_division=0)
+        f1_micro = f1_score(all_labels, all_preds, labels=labels, average="micro", zero_division=0)
 
         avg_loss = test_loss / len(loader)
 

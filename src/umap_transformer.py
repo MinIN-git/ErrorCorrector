@@ -1,5 +1,5 @@
 from umap import UMAP
-import numpy as np
+
 
 class UMAPTransformer:
     """

@@ -1,89 +1,43 @@
-import os
 import argparse
+from pathlib import Path
+
 import torch
 import numpy as np
 import mlflow
 import mlflow.pytorch
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from dotenv import load_dotenv
 from sklearn.metrics import (
-    confusion_matrix,
     f1_score,
     accuracy_score,
     classification_report
 )
 
 from src.resnet import ResNet18
-from src.dataloader import CIFARCustom
+from src.dataloader import DATASET_REGISTRY, build_excluded_dataset, get_dataset_config
 from src.draw_figures import plot_loss, plot_accuracy, plot_confusion_matrix
-
-
-def plot_confusion_matrix(
-    y_true,
-    y_pred,
-    class_names,
-    save_path,
-    normalize=False
-):
-    cm = confusion_matrix(y_true, y_pred)
-
-    if normalize:
-        cm = cm.astype(np.float32)
-        cm = cm / cm.sum(axis=1, keepdims=True)
-
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt=".2f" if normalize else "d",
-        cmap="Blues",
-        xticklabels=class_names,
-        yticklabels=class_names
-    )
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    title = "Confusion Matrix (Normalized)" if normalize else "Confusion Matrix"
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-
-
-def collect_predictions(model, loader, device):
-    model.eval()
-    preds, labels = [], []
-
-    with torch.no_grad():
-        for images, targets in loader:
-            images = images.to(device)
-            targets = targets.to(device)
-
-            outputs = model(images)
-            pred = torch.argmax(outputs, dim=1)
-
-            preds.append(pred.cpu().numpy())
-            labels.append(targets.cpu().numpy())
-
-    return np.concatenate(labels), np.concatenate(preds)
-
+from src.inference import collect_predictions
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train ResNet18 on CIFAR-10 with excluded target class"
+        description="Train ResNet18 on an image dataset with excluded target class"
     )
 
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="cifar10",
+        choices=sorted(DATASET_REGISTRY),
+        help="Dataset registry key"
+    )
     parser.add_argument(
         "-t", "--target",
         type=int,
         required=True,
-        choices=range(10),
-        help="Target class to exclude (0-9)"
+        help="Target class to exclude"
     )
 
     parser.add_argument("--batch_size", type=int, default=64)
@@ -101,6 +55,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    dataset_config = get_dataset_config(args.dataset)
+    if args.target < 0 or args.target >= dataset_config.num_classes:
+        raise ValueError(
+            f"--target должен быть в диапазоне 0..{dataset_config.num_classes - 1} "
+            f"для датасета {args.dataset}"
+        )
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -109,29 +69,29 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)
 
     load_dotenv()
-    mlflow.set_experiment("ResNet18_CIFAR10_Exclude_Class")
+    mlflow.set_experiment(f"ResNet18_{args.dataset}_Exclude_Class")
 
-    with mlflow.start_run(run_name=f"exclude_class_{args.target}_epoch_{args.epochs}"):
-
+    with mlflow.start_run(run_name=f"{args.dataset}_exclude_class_{args.target}_epoch_{args.epochs}"):
 
         # Log hyperparameters
         mlflow.log_params(vars(args))
         mlflow.log_param("device", device.type)
 
-
         # Folders
-        out_dir = f"{args.output_root}/{args.target}/train"
-        os.makedirs(out_dir, exist_ok=True)
-        os.makedirs(args.model_root, exist_ok=True)
+        out_dir = Path(args.output_root) / args.dataset / str(args.target) / "train"
+        model_root = Path(args.model_root)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        model_root.mkdir(parents=True, exist_ok=True)
 
         # Transforms
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))
+            transforms.Normalize(dataset_config.mean, dataset_config.std)
         ])
 
         # Dataset & splits
-        dataset = CIFARCustom(
+        dataset = build_excluded_dataset(
+            name=args.dataset,
             root=args.data_root,
             exclude_class=[args.target],
             train=True,
@@ -151,7 +111,11 @@ def main():
         mlflow.log_params({
             "train_size": len(train_set),
             "val_size": len(val_set),
-            "test_size": len(test_set)
+            "test_size": len(test_set),
+            "dataset": args.dataset,
+            "num_classes": dataset_config.num_classes,
+            "input_channels": dataset_config.input_channels,
+            "label_contract": "original_dataset_labels_with_empty_excluded_class",
         })
 
         train_loader = DataLoader(
@@ -176,7 +140,6 @@ def main():
             num_workers=args.num_workers
         )
 
-
         # Model
         model = ResNet18(
             train_loader=train_loader,
@@ -184,7 +147,9 @@ def main():
             test_loader=test_loader,
             device=device,
             learning_rate=args.lr,
-            num_epochs=args.epochs
+            num_epochs=args.epochs,
+            num_classes=dataset_config.num_classes,
+            input_channels=dataset_config.input_channels,
         )
 
         history = model.train()
@@ -197,69 +162,85 @@ def main():
             mlflow.log_metric("val_f1_macro", history["val_f1_macro"][epoch], step=epoch)
 
         # Plots
-        loss_path = f"{out_dir}/loss.png"
-        acc_path = f"{out_dir}/accuracy.png"
-        f1_path = f"{out_dir}/f1_macro.png"
+        loss_path = out_dir / "loss.png"
+        acc_path = out_dir / "accuracy.png"
+        f1_path = out_dir / "f1_macro.png"
 
         plot_loss(history["train_loss"], history["val_loss"], path=loss_path)
         plot_accuracy(history["val_accuracy"], path=acc_path)
         plot_accuracy(history["val_f1_macro"], "F1 Macro", f1_path)
 
-        mlflow.log_artifact(loss_path, "plots")
-        mlflow.log_artifact(acc_path, "plots")
-        mlflow.log_artifact(f1_path, "plots")
+        mlflow.log_artifact(str(loss_path), "plots")
+        mlflow.log_artifact(str(acc_path), "plots")
+        mlflow.log_artifact(str(f1_path), "plots")
 
         # TEST METRICS
-        class_names = [str(i) for i in range(10) if i != args.target]
+        all_labels = list(range(dataset_config.num_classes))
+        class_names = [
+            f"{class_id}: {name}"
+            for class_id, name in enumerate(dataset.classes)
+        ]
 
         y_test, y_pred = collect_predictions(model.model, test_loader, device)
 
         test_acc = accuracy_score(y_test, y_pred)
-        test_f1_macro = f1_score(y_test, y_pred, average="macro")
-        test_f1_weighted = f1_score(y_test, y_pred, average="weighted")
+        test_f1_macro = f1_score(y_test, y_pred, labels=all_labels, average="macro", zero_division=0)
+        test_f1_weighted = f1_score(y_test, y_pred, labels=all_labels, average="weighted", zero_division=0)
 
         mlflow.log_metric("test_accuracy", test_acc)
         mlflow.log_metric("test_f1_macro", test_f1_macro)
         mlflow.log_metric("test_f1_weighted", test_f1_weighted)
 
         # per-class f1
-        f1_per_class = f1_score(y_test, y_pred, average=None)
-        for cls, f1 in zip(class_names, f1_per_class):
+        f1_per_class = f1_score(y_test, y_pred, labels=all_labels, average=None, zero_division=0)
+        for cls, f1 in zip(all_labels, f1_per_class):
             mlflow.log_metric(f"test_f1_class_{cls}", f1)
 
         # Confusion matrices
-        cm_raw_path = f"{out_dir}/confusion_matrix.png"
-        cm_norm_path = f"{out_dir}/confusion_matrix_normalized.png"
+        cm_raw_path = out_dir / "confusion_matrix.png"
+        cm_norm_path = out_dir / "confusion_matrix_normalized.png"
 
         plot_confusion_matrix(
-            y_test, y_pred, class_names, cm_raw_path, normalize=False
+            y_pred,
+            y_test,
+            class_names=class_names,
+            path=cm_raw_path,
+            labels=all_labels,
+            normalize=None,
         )
         plot_confusion_matrix(
-            y_test, y_pred, class_names, cm_norm_path, normalize=True
+            y_pred,
+            y_test,
+            class_names=class_names,
+            path=cm_norm_path,
+            labels=all_labels,
+            normalize="true",
+            title="Confusion Matrix (Normalized)",
         )
 
-        mlflow.log_artifact(cm_raw_path, "confusion_matrix")
-        mlflow.log_artifact(cm_norm_path, "confusion_matrix")
+        mlflow.log_artifact(str(cm_raw_path), "confusion_matrix")
+        mlflow.log_artifact(str(cm_norm_path), "confusion_matrix")
 
         # Classification report
         report = classification_report(
             y_test,
             y_pred,
+            labels=all_labels,
             target_names=class_names,
-            digits=4
+            digits=4,
+            zero_division=0,
         )
 
-        report_path = f"{out_dir}/classification_report.txt"
-        with open(report_path, "w") as f:
-            f.write(report)
+        report_path = out_dir / "classification_report.txt"
+        report_path.write_text(report)
 
-        mlflow.log_artifact(report_path, "test_metrics")
+        mlflow.log_artifact(str(report_path), "test_metrics")
 
         # Save model
-        model_path = f"{args.model_root}/resnet18_cifar10_without{args.target}_epoch_{args.epochs}.pth"
+        model_path = model_root / f"resnet18_{args.dataset}_without{args.target}_epoch_{args.epochs}.pth"
         model.save_model(model_path)
 
-        mlflow.log_artifact(model_path, "models")
+        mlflow.log_artifact(str(model_path), "models")
         mlflow.pytorch.log_model(model.model, f"exlude{args.target}_epoch{args.epochs}")
 
 
